@@ -12,6 +12,9 @@ import argparse
 
 #Settings, don't change anything you don't understand!
 package_name = "com.nianticlabs.pokemongo"
+
+sig_file_location = os.path.abspath(os.path.join(os.pardir,'Signature.proto'))
+sig_directory_location = os.path.abspath(os.pardir)
 dump_directory_location = os.path.abspath(os.path.join(os.pardir, 'dumps'))
 
 #Process arguments
@@ -74,7 +77,7 @@ def get_messages_from_js(message, data):
 		f.write(data)
 		f.close()
 		if parse:
-			command = "cd {} && protoc --decode_raw < {} > {}" .format(dump_directory_location, file_name+'.bin', file_name+".txt")
+			command = "protoc --decode=Signature -IPATH={} {} < {} > {}" .format(sig_directory_location, sig_file_location, os.path.join(dump_directory_location, file_name+'.bin'), os.path.join(dump_directory_location, file_name+".txt"))
 			b = os.system(command)
 			parse = False
  
@@ -83,10 +86,53 @@ def instrument_debugger_checks():
 
         hook_code = """
 		/* JavaScript Code Start */
+		/* Constants */
+		var BASE_MODULE = "pokemongo"
 		var OFFSET_FN_PROCESS_UNK6_ARM64 = 0x15A59E0;
 		var OFFSET_FN_PROCESS_UNK6_ARM7  = 0x1368604; //32-bit ARMv7 address, not tested.
 
 		var OFFSET_FN_PROCESS_UNK6 = OFFSET_FN_PROCESS_UNK6_ARM64; //WARNING: change to ARM7 for 32bit!
+
+		/* General Info */
+		console.log("Architecture: "+Process.arch);
+		console.log("Platform: "+Process.platform);
+		console.log("Pointer Size: "+Process.pointerSize);
+
+		/* Helper functions */
+		var enumerateProcessModules = function(){ 
+			Process.enumerateModules({
+				onMatch: function(module){
+					console.log([module.name, module.base, module.size, module.path].join("\t"));
+				},
+				onComplete: function(){
+
+				}
+			});
+		};
+		var enumerateProcessRanges = function()
+		{
+			Process.enumerateRanges({"protection": "rw-", "coalesce":true} ,
+			{
+				onMatch: function(range){
+					console.log([range.base, '0x'+range.size.toString(16), range.protection].join("\t"));
+				},
+				onComplete: function(){
+
+				}
+			});
+		};
+		var enumerateBaseModuleRanges = function()
+		{
+			Module.enumerateRanges(BASE_MODULE, "---",
+			{
+				onMatch: function(range){
+					console.log([range.base, '0x'+range.size.toString(16), range.protection].join("\t"));
+				},
+				onComplete: function(){
+
+				}
+			});
+		};
 
 		var fctToHookPtr = Module.findBaseAddress("pokemongo").add(OFFSET_FN_PROCESS_UNK6);
 		console.log("Base address of Main Module: " + Module.findBaseAddress("pokemongo"));
@@ -95,40 +141,14 @@ def instrument_debugger_checks():
 
 		Interceptor.attach(fctToHookPtr, {
 			onEnter: function (args) {
-						console.log("INPUT : ");
-						var buf = Memory.readByteArray(args[0], args[1].toInt32());
-						this.bufPtr = args[0];
-						this.bufLen = args[1].toInt32();
-						send({name:'start'},buf); /* send dump file directly to system */
-						console.log(hexdump(buf, {
-						  offset: 0,
-						  length: args[1].toInt32(),
-						  header: true,
-						  ansi: true
-						}));
+				var buf = Memory.readByteArray(args[0], args[1].toInt32());
+				this.bufPtr = args[0];
+				this.bufLen = args[1].toInt32();
+				send({name:'start'},buf); /* send dump file directly to system */
 			},
 			onLeave: function(retval) {
-						console.log("INPUT AFTER END OF FUNCTION:");
-						var buf = Memory.readByteArray(this.bufPtr, (this.bufLen + (256 - (this.bufLen % 256)) + 32));
-						send({name:'result'},buf); /* send dump file directly to system */
-						console.log(hexdump(buf, {
-						  offset: 0,
-						  length: this.bufLen,
-						  header: true,
-						  ansi: true
-						}));
-
-						/* retval of function not used */	
-						/*
-						console.log("RESULT (1000 BYTES):");
-						var buf = Memory.readByteArray(retval, 1000);
-						console.log(hexdump(buf, {
-						  offset: 0,
-						  length: 1000,
-						  header: true,
-						  ansi: true
-						}));
-						*/
+				var buf = Memory.readByteArray(this.bufPtr, (this.bufLen + (256 - (this.bufLen % 256)) + 32));
+				send({name:'result'},buf); /* send dump file directly to system */
 			}
 		});
 
